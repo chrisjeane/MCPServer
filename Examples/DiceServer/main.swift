@@ -50,7 +50,7 @@ final class DiceServerDelegate: MCPRequestHandlerDelegate {
     }
 
     nonisolated private func handleToolCall(_ request: MCPRequest, id: String) async -> MCPResponse {
-        guard request.params != nil else {
+        guard let params = request.params else {
             return MCPResponse(
                 id: id,
                 result: nil,
@@ -58,9 +58,20 @@ final class DiceServerDelegate: MCPRequestHandlerDelegate {
             )
         }
 
-        if let toolName = extractToolName(from: request),
-           toolName == "roll_dice" {
-            _ = rollDice(count: 1, sides: 6)
+        guard case .toolCall(let toolParams) = params else {
+            return MCPResponse(
+                id: id,
+                result: nil,
+                error: MCPError(code: -32602, message: "Invalid parameters for tools/call")
+            )
+        }
+
+        if toolParams.name == "roll_dice" {
+            let count = extractIntArgument(toolParams.arguments, key: "count") ?? 1
+            let sides = extractIntArgument(toolParams.arguments, key: "sides") ?? 6
+
+            let results = rollDice(count: count, sides: sides)
+
             return MCPResponse(
                 id: id,
                 result: .success(SuccessResult(success: true)),
@@ -75,14 +86,12 @@ final class DiceServerDelegate: MCPRequestHandlerDelegate {
         )
     }
 
-    nonisolated private func extractToolName(from request: MCPRequest) -> String? {
-        // Parse tool/call request to extract tool name
-        // The params contain the tool name in a structure we need to decode
-        // For now, we check if this is a tools/call request and return the expected tool
-        if request.method == "tools/call" {
-            // In a real implementation, you would parse the JSON params
-            // For this example, we support the roll_dice tool
-            return "roll_dice"
+    nonisolated private func extractIntArgument(_ arguments: [String: AnyCodable]?, key: String) -> Int? {
+        guard let arguments = arguments else { return nil }
+        guard let value = arguments[key] else { return nil }
+
+        if case .int(let intValue) = value {
+            return intValue
         }
         return nil
     }
@@ -103,12 +112,96 @@ struct DiceServer {
     static func main() async {
         let delegate = DiceServerDelegate()
         let handler = MCPRequestHandler(delegate: delegate)
-        let transport = StdioTransport(handler: handler)
 
+        // Parse command-line arguments
+        let arguments = CommandLine.arguments
+        var transportType = "stdio"  // Default transport
+        var host = "127.0.0.1"
+        var port = 3000
+
+        var i = 1
+        while i < arguments.count {
+            let arg = arguments[i]
+
+            switch arg {
+            case "--transport":
+                if i + 1 < arguments.count {
+                    transportType = arguments[i + 1]
+                    i += 2
+                } else {
+                    printUsage()
+                    return
+                }
+            case "--host":
+                if i + 1 < arguments.count {
+                    host = arguments[i + 1]
+                    i += 2
+                } else {
+                    printUsage()
+                    return
+                }
+            case "--port":
+                if i + 1 < arguments.count {
+                    if let parsedPort = Int(arguments[i + 1]) {
+                        port = parsedPort
+                        i += 2
+                    } else {
+                        FileHandle.standardError.write("Error: Invalid port number\n".data(using: .utf8) ?? Data())
+                        return
+                    }
+                } else {
+                    printUsage()
+                    return
+                }
+            case "--help", "-h":
+                printUsage()
+                return
+            default:
+                FileHandle.standardError.write("Error: Unknown argument '\(arg)'\n".data(using: .utf8) ?? Data())
+                printUsage()
+                return
+            }
+        }
+
+        // Start the appropriate transport
         do {
-            try await transport.start()
+            switch transportType.lowercased() {
+            case "stdio":
+                let transport = StdioTransport(handler: handler, verbose: true)
+                try await transport.start()
+
+            case "http":
+                let transport = TCPServer(handler: handler, host: host, port: port, verbose: true)
+                try await transport.start()
+
+            default:
+                FileHandle.standardError.write("Error: Unknown transport type '\(transportType)'. Use 'stdio' or 'http'.\n".data(using: .utf8) ?? Data())
+            }
         } catch {
             FileHandle.standardError.write("Error: \(error)\n".data(using: .utf8) ?? Data())
+        }
+    }
+
+    private static func printUsage() {
+        let usage = """
+        Dice Server - MCP Server Example
+
+        Usage: DiceServer [OPTIONS]
+
+        Options:
+          --transport <type>    Transport type: 'stdio' (default) or 'http'
+          --host <address>      Host address for HTTP transport (default: 127.0.0.1)
+          --port <number>       Port number for HTTP transport (default: 3000)
+          --help, -h            Display this help message
+
+        Examples:
+          DiceServer                                    # Start with stdio transport
+          DiceServer --transport http --port 8080      # Start HTTP server on port 8080
+          DiceServer --transport http --host 0.0.0.0   # Start HTTP server on all interfaces
+        """
+
+        if let data = usage.data(using: .utf8) {
+            FileHandle.standardOutput.write(data)
         }
     }
 }
