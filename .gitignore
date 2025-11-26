@@ -1,0 +1,12 @@
+.DS_Store
+.build/
+.swiftpm/
+*.xcodeproj/
+*.playground
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.env
+.env.local
