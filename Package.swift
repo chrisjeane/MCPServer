@@ -8,6 +8,9 @@ let package = Package(
     platforms: [
         .macOS(.v15)
     ],
+    products: [
+        .library(name: "MCPServer", targets: ["MCPServer"])
+    ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-testing.git", from: "0.10.0")
     ],
