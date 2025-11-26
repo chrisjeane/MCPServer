@@ -30,11 +30,7 @@ public let MCP_PROTOCOL_VERSION = "2024-11-05"
 
 public struct MCPCapabilities: Codable, Sendable {
     public struct Logging: Codable, Sendable {
-        public let level: Bool
-
-        public init(level: Bool = true) {
-            self.level = level
-        }
+        public init() {}
     }
 
     public struct Tools: Codable, Sendable {
@@ -45,10 +41,10 @@ public struct MCPCapabilities: Codable, Sendable {
         }
     }
 
-    public let logging: Logging
-    public let tools: Tools
+    public let logging: Logging?
+    public let tools: Tools?
 
-    public init(logging: Logging = Logging(), tools: Tools = Tools()) {
+    public init(logging: Logging? = nil, tools: Tools? = nil) {
         self.logging = logging
         self.tools = tools
     }
@@ -122,7 +118,7 @@ public struct ToolsListResult: Codable, Sendable {
 
 public struct MCPRequest: Codable, Sendable {
     public let jsonrpc: String = "2.0"
-    public let id: String?  // Optional for notifications (system.initialized)
+    public let id: String?  // Optional for notifications (system.initialized), stored as string
     public let method: String
     public let params: MCPParams?
 
@@ -141,7 +137,21 @@ public struct MCPRequest: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try container.decodeIfPresent(String.self, forKey: .id)  // Optional decode
+
+        // Handle id as any JSON type (string, number, or null) per JSON-RPC 2.0 spec
+        var id: String? = nil
+        if container.contains(.id) {
+            // Try decoding as string first
+            if let stringId = try? container.decodeIfPresent(String.self, forKey: .id) ?? nil {
+                id = stringId
+            } else if let intId = try? container.decodeIfPresent(Int.self, forKey: .id) ?? nil {
+                id = String(intId)
+            } else if let doubleId = try? container.decodeIfPresent(Double.self, forKey: .id) ?? nil {
+                id = String(Int(doubleId))
+            }
+            // If id exists but is null, id remains nil
+        }
+        self.id = id
         self.method = try container.decode(String.self, forKey: .method)
 
         if container.contains(.params) {
@@ -190,7 +200,7 @@ public enum MCPParams: Codable, Sendable {
         case "log.clear":
             let params = try ClearLogsParams(from: decoder)
             self = .clearLogs(params)
-        case "system.initialize", "system.capabilities", "system.initialized", "tools/list":
+        case "initialize", "initialized", "tools/list":
             // These methods don't require params
             self = .none
         default:
@@ -272,7 +282,7 @@ public struct SetLogLevelParams: Codable, Sendable {
 }
 
 public struct MCPResponse: Codable, Sendable {
-    public let jsonrpc: String = "2.0"
+    public let jsonrpc: String
     public let id: String?  // Optional for notifications
     public let result: MCPResult?
     public let error: MCPError?
@@ -285,9 +295,39 @@ public struct MCPResponse: Codable, Sendable {
     }
 
     public init(id: String?, result: MCPResult?, error: MCPError?) {
+        self.jsonrpc = "2.0"
         self.id = id
         self.result = result
         self.error = error
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        jsonrpc = try container.decode(String.self, forKey: .jsonrpc)
+
+        // Handle id as any JSON type (string, number, or null)
+        var id: String? = nil
+        if container.contains(.id) {
+            if let stringId = try? container.decodeIfPresent(String.self, forKey: .id) ?? nil {
+                id = stringId
+            } else if let intId = try? container.decodeIfPresent(Int.self, forKey: .id) ?? nil {
+                id = String(intId)
+            } else if let doubleId = try? container.decodeIfPresent(Double.self, forKey: .id) ?? nil {
+                id = String(Int(doubleId))
+            }
+        }
+        self.id = id
+
+        result = try container.decodeIfPresent(MCPResult.self, forKey: .result)
+        error = try container.decodeIfPresent(MCPError.self, forKey: .error)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(jsonrpc, forKey: .jsonrpc)
+        try container.encodeIfPresent(id, forKey: .id)
+        try container.encodeIfPresent(result, forKey: .result)
+        try container.encodeIfPresent(error, forKey: .error)
     }
 }
 

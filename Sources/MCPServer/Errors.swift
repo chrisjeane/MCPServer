@@ -39,9 +39,21 @@ public enum MCPServerError: Error {
 }
 
 public struct ErrorResponse: Codable {
-    public let jsonrpc: String = "2.0"
+    public let jsonrpc: String
     public let id: String
     public let error: ErrorInfo
+
+    enum CodingKeys: String, CodingKey {
+        case jsonrpc
+        case id
+        case error
+    }
+
+    public init(id: String, error: ErrorInfo) {
+        self.jsonrpc = "2.0"
+        self.id = id
+        self.error = error
+    }
 
     public struct ErrorInfo: Codable {
         public let code: Int

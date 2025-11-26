@@ -76,9 +76,15 @@ final class DiceServerDelegate: MCPRequestHandlerDelegate {
     }
 
     nonisolated private func extractToolName(from request: MCPRequest) -> String? {
-        // This is a simplified extraction - in a real implementation,
-        // you'd properly parse the params structure
-        nil
+        // Parse tool/call request to extract tool name
+        // The params contain the tool name in a structure we need to decode
+        // For now, we check if this is a tools/call request and return the expected tool
+        if request.method == "tools/call" {
+            // In a real implementation, you would parse the JSON params
+            // For this example, we support the roll_dice tool
+            return "roll_dice"
+        }
+        return nil
     }
 
     nonisolated private func rollDice(count: Int, sides: Int) -> [Int] {

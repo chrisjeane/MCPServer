@@ -71,16 +71,13 @@ public actor MCPRequestHandler {
     private func processRequest(_ request: MCPRequest) async throws -> MCPResponse? {
         // System protocol methods don't require initialization
         switch request.method {
-        case "system.initialize":
+        case "initialize":
             return await handleSystemInitialize(request)
 
-        case "system.initialized":
+        case "initialized":
             // Mark as initialized (notification - no response)
             initializationState = .initialized
             return nil  // Don't send response for notifications
-
-        case "system.capabilities":
-            return await handleSystemCapabilities(request)
 
         case "tools/list":
             return await handleToolsList(request)

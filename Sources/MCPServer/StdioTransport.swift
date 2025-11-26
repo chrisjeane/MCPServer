@@ -1,9 +1,13 @@
 import Foundation
+import Darwin
 
 public actor StdioTransport {
     private let handler: MCPRequestHandler
     private let verbose: Bool
     private var stdinBuffer = Data()
+    private let stdinFd: Int32 = STDIN_FILENO
+    private let stdoutFd: Int32 = STDOUT_FILENO
+    private let stderrFd: Int32 = STDERR_FILENO
 
     public init(handler: MCPRequestHandler, verbose: Bool = false) {
         self.handler = handler
@@ -15,12 +19,9 @@ public actor StdioTransport {
             await logToStderr("MCPServer: Starting stdio transport")
         }
 
-        let outputStream = FileHandle.standardOutput
-        let inputStream = FileHandle.standardInput
-
         while true {
             // Read message with Content-Length header
-            guard let messageData = readMessage(from: inputStream) else {
+            guard let messageData = readMessage() else {
                 // EOF reached
                 break
             }
@@ -39,7 +40,7 @@ public actor StdioTransport {
                 }
 
                 // Write with Content-Length header
-                writeMessage(responseData, to: outputStream)
+                writeMessage(responseData)
             }
         }
 
@@ -48,7 +49,7 @@ public actor StdioTransport {
         }
     }
 
-    private func readMessage(from inputStream: FileHandle) -> Data? {
+    private func readMessage() -> Data? {
         // MCP uses Content-Length headers: "Content-Length: {N}\r\n\r\n{payload}"
         let doubleCrlfBytes: [UInt8] = [13, 10, 13, 10]  // \r\n\r\n
 
@@ -64,51 +65,57 @@ public actor StdioTransport {
                     return nil
                 }
 
-                guard let contentLengthLine = headerStr.split(separator: "\r").first else {
+                let lines = headerStr.split(separator: "\r")
+                guard let firstLine = lines.first else {
                     return nil
                 }
 
-                let parts = contentLengthLine.split(separator: ":", maxSplits: 1)
-                guard parts.count == 2, parts[0].trimmingCharacters(in: .whitespaces) == "Content-Length" else {
+                let parts = firstLine.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+                guard parts.count == 2, String(parts[0]).trimmingCharacters(in: .whitespaces) == "Content-Length" else {
                     return nil
                 }
 
-                guard let contentLength = Int(parts[1].trimmingCharacters(in: .whitespaces)) else {
+                guard let contentLength = Int(String(parts[1]).trimmingCharacters(in: .whitespaces)) else {
                     return nil
                 }
 
                 // Read exactly contentLength bytes
-                while stdinBuffer.count < payloadStart + contentLength {
-                    let data = inputStream.availableData
-                    if data.isEmpty {
-                        return nil  // EOF
+                let requiredBytes = payloadStart + contentLength
+                while stdinBuffer.count < requiredBytes {
+                    var buffer = [UInt8](repeating: 0, count: 4096)
+                    let bytesRead = Darwin.read(stdinFd, &buffer, 4096)
+                    if bytesRead <= 0 {
+                        return nil  // EOF or error
                     }
-                    stdinBuffer.append(data)
+                    stdinBuffer.append(Data(buffer[0..<bytesRead]))
                 }
 
                 // Extract payload
-                let payloadData = stdinBuffer.subdata(in: payloadStart..<(payloadStart + contentLength))
-                stdinBuffer.removeFirst(payloadStart + contentLength)
+                let payloadData = stdinBuffer.subdata(in: payloadStart..<requiredBytes)
+                stdinBuffer = Data(stdinBuffer.dropFirst(requiredBytes))
 
                 return payloadData
             }
 
             // Need more data for header
-            let data = inputStream.availableData
-            if data.isEmpty {
-                return nil  // EOF
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            let bytesRead = Darwin.read(stdinFd, &buffer, 4096)
+            if bytesRead <= 0 {
+                return nil  // EOF or error
             }
-            stdinBuffer.append(data)
+            stdinBuffer.append(Data(buffer[0..<bytesRead]))
         }
     }
 
-    private func writeMessage(_ data: Data, to outputStream: FileHandle) {
+    private func writeMessage(_ data: Data) {
         // MCP framing: "Content-Length: {N}\r\n\r\n{payload}"
         let header = "Content-Length: \(data.count)\r\n\r\n"
         if let headerData = header.data(using: .utf8) {
-            outputStream.write(headerData)
+            let headerBytes = [UInt8](headerData)
+            _ = Darwin.write(stdoutFd, headerBytes, headerBytes.count)
         }
-        outputStream.write(data)
+        let dataBytes = [UInt8](data)
+        _ = Darwin.write(stdoutFd, dataBytes, dataBytes.count)
     }
 
     private func logToStderr(_ message: String) async {
