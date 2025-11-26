@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "dice": {
+      "command": "/Users/chris/Code/MCP/MCPServer/.build/release/dice-server",
+      "args": ["--transport", "http", "--port", "3000"]
+    }
+  }
+}

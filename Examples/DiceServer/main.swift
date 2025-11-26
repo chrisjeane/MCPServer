@@ -167,7 +167,9 @@ struct DiceServer {
         do {
             switch transportType.lowercased() {
             case "stdio":
-                let transport = StdioTransport(handler: handler, verbose: true)
+                // Write a marker to stderr to indicate the process has started
+                FileHandle.standardError.write("dice-server: initialized\n".data(using: .utf8) ?? Data())
+                let transport = StdioTransport(handler: handler, verbose: false)
                 try await transport.start()
 
             case "http":

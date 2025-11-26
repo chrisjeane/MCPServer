@@ -42,6 +42,37 @@ The binary will be located at `.build/release/dice-server`.
 - `--port <number>`: Port number for HTTP transport (default: 3000)
 - `--help, -h`: Display help information
 
+## Using with Claude Code
+
+The Dice Server works with Claude Code's MCP client. Add it to your Claude Code configuration in `.claude/mcp-servers.json`:
+
+```json
+{
+  "mcpServers": {
+    "dice": {
+      "command": "/path/to/dice-server"
+    }
+  }
+}
+```
+
+**Known Issue:** Claude Code may report "Failed to connect" in the health check when using the stdio transport. This occurs because Claude Code's MCP client performs a health check by spawning the server process briefly, and the stdio transport exits before the initialization message can be received.
+
+**Workaround:** Use the HTTP transport instead. Modify your `.claude/mcp-servers.json` to specify transport arguments:
+
+```json
+{
+  "mcpServers": {
+    "dice": {
+      "command": "/path/to/dice-server",
+      "args": ["--transport", "http", "--port", "3000"]
+    }
+  }
+}
+```
+
+This way, the server uses the HTTP transport which handles connection setup differently and should not encounter the same timeout issues.
+
 ## Testing with HTTP Transport
 
 The Dice Server communicates using the MCP protocol with Content-Length framing. Follow these steps to test:

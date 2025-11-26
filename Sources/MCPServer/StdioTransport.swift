@@ -84,8 +84,14 @@ public actor StdioTransport {
                 while stdinBuffer.count < requiredBytes {
                     var buffer = [UInt8](repeating: 0, count: 4096)
                     let bytesRead = Darwin.read(stdinFd, &buffer, 4096)
-                    if bytesRead <= 0 {
-                        return nil  // EOF or error
+                    if bytesRead < 0 {
+                        // Check for EINTR (interrupted system call)
+                        if errno == EINTR {
+                            continue  // Retry on interrupt
+                        }
+                        return nil  // Error
+                    } else if bytesRead == 0 {
+                        return nil  // EOF
                     }
                     stdinBuffer.append(Data(buffer[0..<bytesRead]))
                 }
@@ -100,8 +106,14 @@ public actor StdioTransport {
             // Need more data for header
             var buffer = [UInt8](repeating: 0, count: 4096)
             let bytesRead = Darwin.read(stdinFd, &buffer, 4096)
-            if bytesRead <= 0 {
-                return nil  // EOF or error
+            if bytesRead < 0 {
+                // Check for EINTR (interrupted system call)
+                if errno == EINTR {
+                    continue  // Retry on interrupt
+                }
+                return nil  // Error
+            } else if bytesRead == 0 {
+                return nil  // EOF
             }
             stdinBuffer.append(Data(buffer[0..<bytesRead]))
         }
