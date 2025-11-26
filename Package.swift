@@ -9,7 +9,8 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .library(name: "MCPServer", targets: ["MCPServer"])
+        .library(name: "MCPServer", targets: ["MCPServer"]),
+        .executable(name: "dice-server", targets: ["DiceServer"])
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-testing.git", from: "0.10.0")
@@ -17,6 +18,11 @@ let package = Package(
     targets: [
         .target(
             name: "MCPServer"
+        ),
+        .executableTarget(
+            name: "DiceServer",
+            dependencies: ["MCPServer"],
+            path: "Examples/DiceServer"
         ),
         .testTarget(
             name: "MCPServerTests",
