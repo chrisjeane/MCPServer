@@ -6,8 +6,7 @@ import PackageDescription
 let package = Package(
     name: "MCPServer",
     platforms: [
-        .macOS(.v14),
-        .macOS(.v15)
+        .macOS(.v14)
     ],
     products: [
         .library(name: "MCPServer", targets: ["MCPServer"])
