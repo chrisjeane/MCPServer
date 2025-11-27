@@ -1,23 +1,28 @@
 import Foundation
 
-public enum InitializationState {
+/// Represents the initialization state of the MCP server.
+public enum InitializationState: Sendable {
     case uninitialized
     case initialized
 }
 
-/// Protocol for handling domain-specific MCP requests
+/// Protocol for handling domain-specific MCP requests.
+/// Implement this protocol to provide custom server functionality.
 public protocol MCPRequestHandlerDelegate: Sendable {
-    /// Return custom server information
+    /// Return custom server information displayed during initialization.
     func getServerInfo() -> ServerInfo
 
-    /// Define available tools for this server
+    /// Define available tools for this server.
+    /// Called during tools/list requests.
     func buildToolDefinitions() -> [Tool]
 
-    /// Handle domain-specific methods after initialization
+    /// Handle domain-specific methods after initialization.
+    /// Return nil for notifications (no response expected).
     func handleDomainSpecificRequest(_ request: MCPRequest) async throws -> MCPResponse?
 }
 
-/// Base class for handling MCP protocol requests
+/// Actor-based handler for MCP protocol requests.
+/// Provides thread-safe request processing with proper initialization sequencing.
 public actor MCPRequestHandler {
     private var initializationState: InitializationState = .uninitialized
     nonisolated let encoder: JSONEncoder
@@ -32,6 +37,8 @@ public actor MCPRequestHandler {
         self.decoder.dateDecodingStrategy = .iso8601
     }
 
+    /// Handles a raw request data and returns response data.
+    /// Returns nil for notifications or on unrecoverable errors.
     public func handleRequest(_ requestData: Data) async -> Data? {
         do {
             let request = try decoder.decode(MCPRequest.self, from: requestData)
@@ -49,11 +56,18 @@ public actor MCPRequestHandler {
         }
     }
 
+    /// Extracts the request ID from raw JSON data using Codable.
+    /// This is more efficient and type-safe than JSONSerialization.
     private func extractIdFromData(_ data: Data) -> String? {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        // Define a minimal struct to extract just the ID field
+        struct RequestID: Codable {
+            let id: String?
+        }
+
+        guard let requestID = try? decoder.decode(RequestID.self, from: data) else {
             return nil
         }
-        return json["id"] as? String
+        return requestID.id
     }
 
     public func handleRequest(_ requestString: String) async -> String? {
@@ -116,7 +130,20 @@ public actor MCPRequestHandler {
 
     // MARK: - System Protocol Methods
 
+    /// Handles the initialize request with proper validation.
+    /// The initialize request should include client capabilities and protocol version.
     private func handleSystemInitialize(_ request: MCPRequest) async -> MCPResponse {
+        // Validate that we have a request ID (initialize is not a notification)
+        guard let id = request.id else {
+            // This shouldn't happen for initialize, but handle gracefully
+            return MCPResponse(
+                id: "unknown",
+                result: nil,
+                error: MCPError(code: -32600, message: "Invalid Request: initialize must have an ID")
+            )
+        }
+
+        // Build server capabilities
         let capabilities = MCPCapabilities(
             logging: MCPCapabilities.Logging(),
             tools: MCPCapabilities.Tools(listChanged: false)
@@ -129,16 +156,8 @@ public actor MCPRequestHandler {
         )
 
         return MCPResponse(
-            id: request.id,
+            id: id,
             result: .initialize(result),
-            error: nil
-        )
-    }
-
-    private func handleSystemCapabilities(_ request: MCPRequest) async -> MCPResponse {
-        return MCPResponse(
-            id: request.id,
-            result: .success(SuccessResult(success: true)),
             error: nil
         )
     }

@@ -22,7 +22,8 @@ let package = Package(
         .executableTarget(
             name: "DiceServer",
             dependencies: ["MCPServer"],
-            path: "Examples/DiceServer"
+            path: "Examples/DiceServer",
+            exclude: ["README.md"]
         ),
         .testTarget(
             name: "MCPServerTests",

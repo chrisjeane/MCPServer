@@ -1,6 +1,8 @@
 import Foundation
 
-public enum MCPServerError: Error {
+/// MCP server errors conforming to JSON-RPC 2.0 error codes.
+/// Sendable conformance ensures thread-safe error propagation across concurrency boundaries.
+public enum MCPServerError: Error, Sendable {
     case invalidRequest(message: String)
     case methodNotFound(method: String)
     case invalidParams(message: String)
@@ -38,7 +40,9 @@ public enum MCPServerError: Error {
     }
 }
 
-public struct ErrorResponse: Codable {
+/// JSON-RPC 2.0 error response structure.
+/// Sendable conformance ensures thread-safe usage in concurrent contexts.
+public struct ErrorResponse: Codable, Sendable {
     public let jsonrpc: String
     public let id: String
     public let error: ErrorInfo
@@ -55,7 +59,7 @@ public struct ErrorResponse: Codable {
         self.error = error
     }
 
-    public struct ErrorInfo: Codable {
+    public struct ErrorInfo: Codable, Sendable {
         public let code: Int
         public let message: String
         public let data: String?

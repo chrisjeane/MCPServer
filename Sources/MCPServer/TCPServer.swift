@@ -16,11 +16,17 @@ private func createSocket() -> Int32 {
     #endif
 }
 
+/// TCP server for MCP protocol communication.
+/// Handles multiple concurrent connections with proper resource limits and cancellation support.
 public final class TCPServer: Sendable {
     private let handler: MCPRequestHandler
     private let verbose: Bool
     private let host: String
     private let port: Int
+
+    // Constants for server configuration
+    private static let maxConnections = 100
+    private static let capacityCheckInterval: UInt64 = 100_000_000  // 100ms in nanoseconds
 
     public init(handler: MCPRequestHandler, host: String, port: Int, verbose: Bool = false) {
         self.handler = handler
@@ -29,6 +35,8 @@ public final class TCPServer: Sendable {
         self.verbose = verbose
     }
 
+    /// Starts the TCP server and accepts incoming connections.
+    /// This method runs indefinitely until cancelled or an error occurs.
     public func start() async throws {
         if verbose {
             await logToStderr("MCPServer: Starting TCP server on \(host):\(port)")
@@ -44,22 +52,23 @@ public final class TCPServer: Sendable {
         }
 
         // Use structured concurrency to manage connection lifetime
-        let maxConnections = 100
         try await withThrowingTaskGroup(of: Void.self) { group in
-            // Use an actor-isolated counter for thread-safe access
+            // Actor-isolated counter for thread-safe connection tracking
             actor ConnectionCounter {
                 var count = 0
 
-                func increment() {
+                /// Atomically increment and return whether we're still below capacity.
+                /// This eliminates the race window between check and increment.
+                func tryIncrement(max: Int) -> Bool {
+                    guard count < max else {
+                        return false
+                    }
                     count += 1
+                    return true
                 }
 
                 func decrement() {
                     count -= 1
-                }
-
-                func isBelowCapacity(_ max: Int) -> Bool {
-                    count < max
                 }
             }
 
@@ -68,15 +77,13 @@ public final class TCPServer: Sendable {
             while !Task.isCancelled {
                 // Accept a new connection
                 do {
-                    // Only accept if we have capacity
-                    if await counter.isBelowCapacity(maxConnections) {
+                    // Atomically check and increment to prevent race condition
+                    if await counter.tryIncrement(max: Self.maxConnections) {
                         let clientSocket = try acceptConnection(on: serverSocket)
 
                         if verbose {
                             await logToStderr("MCPServer: Accepted connection on socket \(clientSocket)")
                         }
-
-                        await counter.increment()
 
                         // Add task to handle this connection
                         group.addTask { [self, counter] in
@@ -89,7 +96,7 @@ public final class TCPServer: Sendable {
                         }
                     } else {
                         // At capacity - wait a bit before trying again
-                        try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                        try await Task.sleep(nanoseconds: Self.capacityCheckInterval)
                     }
                 } catch {
                     if verbose {
@@ -168,16 +175,28 @@ public final class TCPServer: Sendable {
 
     private func setSocketTimeouts(socket: Int32, readTimeout: Int, writeTimeout: Int) throws {
         // Set read timeout (SO_RCVTIMEO)
+        #if os(Linux)
+        var readTV = timeval(tv_sec: Int(readTimeout), tv_usec: 0)
+        #else
         var readTV = timeval(tv_sec: __darwin_time_t(readTimeout), tv_usec: 0)
+        #endif
+
         let readResult = setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &readTV, socklen_t(MemoryLayout<timeval>.size))
         guard readResult == 0 else {
+            close(socket)  // Prevent file descriptor leak
             throw SocketError.socketOptionFailed
         }
 
         // Set write timeout (SO_SNDTIMEO)
+        #if os(Linux)
+        var writeTV = timeval(tv_sec: Int(writeTimeout), tv_usec: 0)
+        #else
         var writeTV = timeval(tv_sec: __darwin_time_t(writeTimeout), tv_usec: 0)
+        #endif
+
         let writeResult = setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &writeTV, socklen_t(MemoryLayout<timeval>.size))
         guard writeResult == 0 else {
+            close(socket)  // Prevent file descriptor leak
             throw SocketError.socketOptionFailed
         }
     }
@@ -246,15 +265,22 @@ public final class TCPServer: Sendable {
 
 // MARK: - Socket Utilities
 
-public enum SocketError: Error, LocalizedError {
+/// Errors that can occur during socket operations.
+public enum SocketError: Error, LocalizedError, Sendable {
     case socketCreationFailed
     case socketOptionFailed
     case invalidAddress
     case bindFailed
     case listenFailed
     case acceptFailed
-    case readFailed
-    case writeFailed
+    case readFailed(errorCode: Int32)
+    case writeFailed(errorCode: Int32)
+    case invalidHeader
+    case missingContentLength
+    case invalidContentLength
+    case unexpectedEOF
+    case bufferOverflow
+    case invalidEncoding
 
     public var errorDescription: String? {
         switch self {
@@ -270,20 +296,38 @@ public enum SocketError: Error, LocalizedError {
             return "Failed to listen on socket"
         case .acceptFailed:
             return "Failed to accept connection"
-        case .readFailed:
-            return "Failed to read from socket"
-        case .writeFailed:
-            return "Failed to write to socket"
+        case .readFailed(let code):
+            return "Failed to read from socket: errno \(code)"
+        case .writeFailed(let code):
+            return "Failed to write to socket: errno \(code)"
+        case .invalidHeader:
+            return "Invalid message header"
+        case .missingContentLength:
+            return "Missing Content-Length header"
+        case .invalidContentLength:
+            return "Invalid Content-Length value"
+        case .unexpectedEOF:
+            return "Unexpected end of file while reading message"
+        case .bufferOverflow:
+            return "Buffer size exceeded maximum allowed (10MB)"
+        case .invalidEncoding:
+            return "Invalid UTF-8 encoding"
         }
     }
 }
 
 // MARK: - Socket Input Stream
 
-private class FileInputStream {
+/// Thread-safe input stream for reading MCP protocol messages from a socket.
+/// Handles Content-Length framing and buffer management with bounded memory growth.
+private final class FileInputStream: @unchecked Sendable {
     private let socket: Int32
     private var buffer: Data = Data()
-    private let bufferSize = 4096
+    private static let bufferSize = 4096
+    private static let maxBufferSize = 10_000_000  // 10MB max to prevent unbounded growth
+    private static let doubleCrlfBytes: [UInt8] = [13, 10, 13, 10]  // \r\n\r\n
+    private static let doubleCrlfLength = 4
+    private static let maxContentLength = 10_000_000  // 10MB max message size
 
     init(socket: Int32) {
         self.socket = socket
@@ -291,92 +335,92 @@ private class FileInputStream {
 
     func readMessage() throws -> Data? {
         // MCP uses Content-Length headers: "Content-Length: {N}\r\n\r\n{payload}"
-        // Read until we find the double CRLF that separates header from body
-
-        let doubleCrlfBytes: [UInt8] = [13, 10, 13, 10]  // \r\n\r\n
+        let doubleCrlfData = Data(Self.doubleCrlfBytes)
 
         while true {
+            // Prevent unbounded buffer growth
+            guard buffer.count <= Self.maxBufferSize else {
+                throw SocketError.bufferOverflow
+            }
+
             // Look for double CRLF in buffer
-            if let range = buffer.range(of: Data(doubleCrlfBytes)) {
+            if let range = buffer.range(of: doubleCrlfData) {
                 let headerEnd = buffer.distance(from: buffer.startIndex, to: range.lowerBound)
                 let headerData = buffer.subdata(in: 0..<headerEnd)
-                let payloadStart = headerEnd + 4  // Skip \r\n\r\n
+                let payloadStart = headerEnd + Self.doubleCrlfLength
 
                 // Parse Content-Length header
                 guard let headerStr = String(data: headerData, encoding: .utf8) else {
-                    throw SocketError.readFailed
+                    throw SocketError.invalidHeader
                 }
 
                 guard let contentLengthLine = headerStr.split(separator: "\r").first else {
-                    throw SocketError.readFailed
+                    throw SocketError.invalidHeader
                 }
 
                 let parts = contentLengthLine.split(separator: ":", maxSplits: 1)
                 guard parts.count == 2, parts[0].trimmingCharacters(in: .whitespaces) == "Content-Length" else {
-                    throw SocketError.readFailed
+                    throw SocketError.missingContentLength
                 }
 
-                guard let contentLength = Int(parts[1].trimmingCharacters(in: .whitespaces)) else {
-                    throw SocketError.readFailed
+                guard let contentLength = Int(parts[1].trimmingCharacters(in: .whitespaces)),
+                      contentLength >= 0,
+                      contentLength <= Self.maxContentLength else {
+                    throw SocketError.invalidContentLength
                 }
 
                 // Read exactly contentLength bytes
-                while buffer.count < payloadStart + contentLength {
-                    var readBuffer = [UInt8](repeating: 0, count: bufferSize)
-                    let bytesRead = read(socket, &readBuffer, bufferSize)
+                let requiredBytes = payloadStart + contentLength
+                while buffer.count < requiredBytes {
+                    let data = try readFromSocket()
+                    guard let data else {
+                        throw SocketError.unexpectedEOF
+                    }
+                    buffer.append(data)
 
-                    if bytesRead > 0 {
-                        buffer.append(contentsOf: readBuffer[0..<bytesRead])
-                    } else if bytesRead == 0 {
-                        // Connection closed
-                        return nil
-                    } else {
-                        // Error occurred
-                        #if os(Linux)
-                        let err = Darwin.errno
-                        #else
-                        let err = Darwin.errno
-                        #endif
-
-                        if err == EINTR {
-                            // Interrupted system call, retry
-                            continue
-                        } else {
-                            throw SocketError.readFailed
-                        }
+                    // Check for overflow again
+                    guard buffer.count <= Self.maxBufferSize else {
+                        throw SocketError.bufferOverflow
                     }
                 }
 
                 // Extract payload
-                let payloadData = buffer.subdata(in: payloadStart..<(payloadStart + contentLength))
-                buffer.removeFirst(payloadStart + contentLength)
+                let payloadData = buffer.subdata(in: payloadStart..<requiredBytes)
+                buffer.removeFirst(requiredBytes)
 
                 return payloadData
             }
 
             // Need more data for header
-            var readBuffer = [UInt8](repeating: 0, count: bufferSize)
-            let bytesRead = read(socket, &readBuffer, bufferSize)
+            guard let data = try readFromSocket() else {
+                return nil  // Clean EOF
+            }
+            buffer.append(data)
+        }
+    }
 
-            if bytesRead > 0 {
-                buffer.append(contentsOf: readBuffer[0..<bytesRead])
-            } else if bytesRead == 0 {
-                // Connection closed
-                return nil
+    /// Reads data from socket, handling interrupts and capturing errno safely.
+    private func readFromSocket() throws -> Data? {
+        var readBuffer = [UInt8](repeating: 0, count: Self.bufferSize)
+        let bytesRead = read(socket, &readBuffer, Self.bufferSize)
+
+        if bytesRead > 0 {
+            return Data(readBuffer[0..<bytesRead])
+        } else if bytesRead == 0 {
+            return nil  // EOF
+        } else {
+            // Capture errno immediately before any other system calls
+            #if os(Linux)
+            let errorCode = errno
+            #else
+            let errorCode = errno
+            #endif
+
+            if errorCode == EINTR {
+                // Interrupted, retry by returning empty data
+                return Data()
             } else {
-                // Error occurred
-                #if os(Linux)
-                let err = Darwin.errno
-                #else
-                let err = Darwin.errno
-                #endif
-
-                if err == EINTR {
-                    // Interrupted system call, retry
-                    continue
-                } else {
-                    throw SocketError.readFailed
-                }
+                throw SocketError.readFailed(errorCode: errorCode)
             }
         }
     }
@@ -384,76 +428,64 @@ private class FileInputStream {
 
 // MARK: - Socket Output Stream
 
-private class FileOutputStream {
+/// Thread-safe output stream for writing MCP protocol messages to a socket.
+/// Handles Content-Length framing and partial write scenarios.
+private final class FileOutputStream: @unchecked Sendable {
     private let socket: Int32
 
     init(socket: Int32) {
         self.socket = socket
     }
 
+    /// Writes a complete MCP message with Content-Length framing.
+    /// Handles partial writes and interrupts properly.
     func writeMessage(_ data: Data) throws {
         // MCP framing: "Content-Length: {N}\r\n\r\n{payload}"
         let header = "Content-Length: \(data.count)\r\n\r\n"
         guard let headerData = header.data(using: .utf8) else {
-            throw SocketError.writeFailed
+            throw SocketError.invalidEncoding
         }
 
         // Write header
-        var bytesWritten = 0
-        while bytesWritten < headerData.count {
-            let written = headerData.withUnsafeBytes { buffer in
-                write(socket, buffer.baseAddress! + bytesWritten, headerData.count - bytesWritten)
-            }
-
-            if written > 0 {
-                bytesWritten += written
-            } else if written < 0 {
-                // Error occurred
-                #if os(Linux)
-                let err = Darwin.errno
-                #else
-                let err = Darwin.errno
-                #endif
-
-                if err == EINTR {
-                    // Interrupted system call, retry
-                    continue
-                } else {
-                    throw SocketError.writeFailed
-                }
-            } else {
-                // written == 0, which shouldn't happen on blocking sockets
-                // but if it does, we should retry
-                continue
-            }
-        }
+        try writeAll(data: headerData)
 
         // Write payload
-        bytesWritten = 0
-        while bytesWritten < data.count {
+        try writeAll(data: data)
+    }
+
+    /// Writes all data to socket, handling partial writes and interrupts.
+    private func writeAll(data: Data) throws {
+        var bytesWritten = 0
+        let totalBytes = data.count
+
+        while bytesWritten < totalBytes {
             let written = data.withUnsafeBytes { buffer in
-                write(socket, buffer.baseAddress! + bytesWritten, data.count - bytesWritten)
+                // Safe to force unwrap here as Data guarantees baseAddress for non-empty data
+                guard let baseAddress = buffer.baseAddress else {
+                    return 0
+                }
+                return write(socket, baseAddress + bytesWritten, totalBytes - bytesWritten)
             }
 
             if written > 0 {
                 bytesWritten += written
             } else if written < 0 {
-                // Error occurred
+                // Capture errno immediately before any other system calls
                 #if os(Linux)
-                let err = Darwin.errno
+                let errorCode = errno
                 #else
-                let err = Darwin.errno
+                let errorCode = errno
                 #endif
 
-                if err == EINTR {
+                if errorCode == EINTR {
                     // Interrupted system call, retry
                     continue
                 } else {
-                    throw SocketError.writeFailed
+                    throw SocketError.writeFailed(errorCode: errorCode)
                 }
             } else {
-                // written == 0, which shouldn't happen on blocking sockets
-                // but if it does, we should retry
+                // written == 0, should not happen on blocking sockets
+                // but retry to be safe
                 continue
             }
         }

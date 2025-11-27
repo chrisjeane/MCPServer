@@ -122,7 +122,7 @@ public struct MCPRequest: Codable, Sendable {
     public let method: String
     public let params: MCPParams?
 
-    public enum CodingKeys: String, CodingKey, Sendable {
+    public enum CodingKeys: String, CodingKey {
         case jsonrpc
         case id
         case method
@@ -237,7 +237,7 @@ public enum MCPParams: Codable, Sendable {
         }
     }
 
-    public enum CodingKeys: String, CodingKey, Sendable {
+    public enum CodingKeys: String, CodingKey {
         case message
         case loggerId
         case level
@@ -363,7 +363,7 @@ public struct MCPResponse: Codable, Sendable {
     public let result: MCPResult?
     public let error: MCPError?
 
-    public enum CodingKeys: String, CodingKey, Sendable {
+    public enum CodingKeys: String, CodingKey {
         case jsonrpc
         case id
         case result
@@ -438,7 +438,7 @@ public enum MCPResult: Codable, Sendable {
         }
     }
 
-    public enum CodingKeys: String, CodingKey, Sendable {
+    public enum CodingKeys: String, CodingKey {
         case success
         case protocolVersion
         case capabilities
