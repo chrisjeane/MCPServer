@@ -35,37 +35,72 @@ public final class TCPServer: Sendable {
         }
 
         let serverSocket = try createServerSocket()
+        defer {
+            close(serverSocket)
+        }
 
         if verbose {
             await logToStderr("MCPServer: Listening on \(host):\(port)")
         }
 
-        // Accept connections indefinitely
-        while true {
-            logToStderrSync("DEBUG: Entering accept loop, calling acceptConnection...")
-            do {
-                let clientSocket = try acceptConnection(on: serverSocket)
-                logToStderrSync("DEBUG: acceptConnection returned socket \(clientSocket)")
+        // Use structured concurrency to manage connection lifetime
+        let maxConnections = 100
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            // Use an actor-isolated counter for thread-safe access
+            actor ConnectionCounter {
+                var count = 0
 
-                // Handle each connection concurrently on a background queue
-                logToStderrSync("DEBUG: Creating queue for handleClient")
-                DispatchQueue.global(qos: .userInitiated).async { [self] in
-                    self.logToStderrSync("DEBUG: Handler started for socket \(clientSocket)")
-                    // Use a semaphore to wait for async operation
-                    let semaphore = DispatchSemaphore(value: 0)
-                    Task {
-                        await self.handleClient(socket: clientSocket)
-                        semaphore.signal()
-                    }
-                    semaphore.wait()
-                    self.logToStderrSync("DEBUG: Handler completed for socket \(clientSocket)")
+                func increment() {
+                    count += 1
                 }
-                logToStderrSync("DEBUG: Handler queued, returning to accept loop")
-            } catch {
-                logToStderrSync("DEBUG: acceptConnection threw error: \(error)")
-                await logToStderr("MCPServer: Error accepting connection: \(error)")
-                // Continue accepting new connections
+
+                func decrement() {
+                    count -= 1
+                }
+
+                func isBelowCapacity(_ max: Int) -> Bool {
+                    count < max
+                }
             }
+
+            let counter = ConnectionCounter()
+
+            while !Task.isCancelled {
+                // Accept a new connection
+                do {
+                    // Only accept if we have capacity
+                    if await counter.isBelowCapacity(maxConnections) {
+                        let clientSocket = try acceptConnection(on: serverSocket)
+
+                        if verbose {
+                            await logToStderr("MCPServer: Accepted connection on socket \(clientSocket)")
+                        }
+
+                        await counter.increment()
+
+                        // Add task to handle this connection
+                        group.addTask { [self, counter] in
+                            defer {
+                                Task {
+                                    await counter.decrement()
+                                }
+                            }
+                            await self.handleClient(socket: clientSocket)
+                        }
+                    } else {
+                        // At capacity - wait a bit before trying again
+                        try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                    }
+                } catch {
+                    if verbose {
+                        await logToStderr("MCPServer: Error accepting connection: \(error)")
+                    }
+                    // Continue accepting new connections on error
+                }
+            }
+
+            // Wait for all connections to complete on shutdown
+            try await group.waitForAll()
         }
     }
 
@@ -130,6 +165,8 @@ public final class TCPServer: Sendable {
 
     nonisolated private func handleClient(socket: Int32) async {
         defer {
+            // Graceful shutdown: shutdown before close
+            shutdown(socket, SHUT_RDWR)
             close(socket)
         }
 
