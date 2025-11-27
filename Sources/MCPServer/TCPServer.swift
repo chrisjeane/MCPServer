@@ -281,15 +281,26 @@ private class FileInputStream {
                     var readBuffer = [UInt8](repeating: 0, count: bufferSize)
                     let bytesRead = read(socket, &readBuffer, bufferSize)
 
-                    guard bytesRead > 0 else {
-                        if bytesRead == 0 {
-                            return nil
+                    if bytesRead > 0 {
+                        buffer.append(contentsOf: readBuffer[0..<bytesRead])
+                    } else if bytesRead == 0 {
+                        // Connection closed
+                        return nil
+                    } else {
+                        // Error occurred
+                        #if os(Linux)
+                        let err = Darwin.errno
+                        #else
+                        let err = Darwin.errno
+                        #endif
+
+                        if err == EINTR {
+                            // Interrupted system call, retry
+                            continue
                         } else {
                             throw SocketError.readFailed
                         }
                     }
-
-                    buffer.append(contentsOf: readBuffer[0..<bytesRead])
                 }
 
                 // Extract payload
@@ -303,15 +314,26 @@ private class FileInputStream {
             var readBuffer = [UInt8](repeating: 0, count: bufferSize)
             let bytesRead = read(socket, &readBuffer, bufferSize)
 
-            guard bytesRead > 0 else {
-                if bytesRead == 0 {
-                    return nil
+            if bytesRead > 0 {
+                buffer.append(contentsOf: readBuffer[0..<bytesRead])
+            } else if bytesRead == 0 {
+                // Connection closed
+                return nil
+            } else {
+                // Error occurred
+                #if os(Linux)
+                let err = Darwin.errno
+                #else
+                let err = Darwin.errno
+                #endif
+
+                if err == EINTR {
+                    // Interrupted system call, retry
+                    continue
                 } else {
                     throw SocketError.readFailed
                 }
             }
-
-            buffer.append(contentsOf: readBuffer[0..<bytesRead])
         }
     }
 }
@@ -339,11 +361,27 @@ private class FileOutputStream {
                 write(socket, buffer.baseAddress! + bytesWritten, headerData.count - bytesWritten)
             }
 
-            guard written > 0 else {
-                throw SocketError.writeFailed
-            }
+            if written > 0 {
+                bytesWritten += written
+            } else if written < 0 {
+                // Error occurred
+                #if os(Linux)
+                let err = Darwin.errno
+                #else
+                let err = Darwin.errno
+                #endif
 
-            bytesWritten += written
+                if err == EINTR {
+                    // Interrupted system call, retry
+                    continue
+                } else {
+                    throw SocketError.writeFailed
+                }
+            } else {
+                // written == 0, which shouldn't happen on blocking sockets
+                // but if it does, we should retry
+                continue
+            }
         }
 
         // Write payload
@@ -353,11 +391,27 @@ private class FileOutputStream {
                 write(socket, buffer.baseAddress! + bytesWritten, data.count - bytesWritten)
             }
 
-            guard written > 0 else {
-                throw SocketError.writeFailed
-            }
+            if written > 0 {
+                bytesWritten += written
+            } else if written < 0 {
+                // Error occurred
+                #if os(Linux)
+                let err = Darwin.errno
+                #else
+                let err = Darwin.errno
+                #endif
 
-            bytesWritten += written
+                if err == EINTR {
+                    // Interrupted system call, retry
+                    continue
+                } else {
+                    throw SocketError.writeFailed
+                }
+            } else {
+                // written == 0, which shouldn't happen on blocking sockets
+                // but if it does, we should retry
+                continue
+            }
         }
     }
 }
