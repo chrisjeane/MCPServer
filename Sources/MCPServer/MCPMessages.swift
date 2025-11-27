@@ -461,9 +461,11 @@ public struct InitializeResult: Codable, Sendable {
 
 public struct SuccessResult: Codable, Sendable {
     public let success: Bool
+    public let results: [String: AnyCodable]?
 
-    public init(success: Bool) {
+    public init(success: Bool, results: [String: AnyCodable]? = nil) {
         self.success = success
+        self.results = results
     }
 }
 

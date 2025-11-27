@@ -70,11 +70,29 @@ final class DiceServerDelegate: MCPRequestHandlerDelegate {
             let count = extractIntArgument(toolParams.arguments, key: "count") ?? 1
             let sides = extractIntArgument(toolParams.arguments, key: "sides") ?? 6
 
+            // Validate input parameters
+            guard validateDiceParameters(count, sides) else {
+                return MCPResponse(
+                    id: id,
+                    result: nil,
+                    error: MCPError(
+                        code: -32602,
+                        message: "Invalid parameters: count must be 1-100, sides must be 1-10000"
+                    )
+                )
+            }
+
             let results = rollDice(count: count, sides: sides)
+
+            // Create response with actual roll results
+            let resultDict: [String: AnyCodable] = [
+                "success": .bool(true),
+                "results": .array(results.map { .int($0) })
+            ]
 
             return MCPResponse(
                 id: id,
-                result: .success(SuccessResult(success: true)),
+                result: .success(SuccessResult(success: true, results: resultDict)),
                 error: nil
             )
         }
@@ -84,6 +102,10 @@ final class DiceServerDelegate: MCPRequestHandlerDelegate {
             result: nil,
             error: MCPError(code: -32601, message: "Tool not found")
         )
+    }
+
+    nonisolated private func validateDiceParameters(_ count: Int, _ sides: Int) -> Bool {
+        return count >= 1 && count <= 100 && sides >= 1 && sides <= 10000
     }
 
     nonisolated private func extractIntArgument(_ arguments: [String: AnyCodable]?, key: String) -> Int? {
