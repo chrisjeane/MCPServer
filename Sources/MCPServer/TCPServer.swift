@@ -189,8 +189,6 @@ public final class TCPServer: Sendable {
             close(socket)
         }
 
-        logToStderrSync("DEBUG: handleClient called for socket \(socket)")
-
         if verbose {
             await logToStderr("MCPServer: Client connected")
         }
@@ -200,38 +198,28 @@ public final class TCPServer: Sendable {
 
         while true {
             do {
-                logToStderrSync("DEBUG: Calling readMessage()")
                 guard let messageData = try inputStream.readMessage() else {
-                    logToStderrSync("DEBUG: readMessage() returned nil (EOF)")
                     break
                 }
 
-                if let messageStr = String(data: messageData, encoding: .utf8) {
-                    logToStderrSync("DEBUG: readMessage() returned: \(messageStr)")
-                    if verbose {
+                if verbose {
+                    if let messageStr = String(data: messageData, encoding: .utf8) {
                         await logToStderr("MCPServer: Received: \(messageStr)")
                     }
                 }
 
-                logToStderrSync("DEBUG: Calling handler.handleRequest()")
                 if let responseData = await handler.handleRequest(messageData) {
-                    if let responseStr = String(data: responseData, encoding: .utf8) {
-                        logToStderrSync("DEBUG: Got response: \(responseStr.prefix(100))")
-                        if verbose {
+                    try outputStream.writeMessage(responseData)
+
+                    if verbose {
+                        if let responseStr = String(data: responseData, encoding: .utf8) {
                             await logToStderr("MCPServer: Sending: \(responseStr)")
                         }
                     }
-
-                    try outputStream.writeMessage(responseData)
-                    logToStderrSync("DEBUG: Response sent")
-                } else {
-                    logToStderrSync("DEBUG: handler returned nil")
-                    if verbose {
-                        await logToStderr("MCPServer: No response generated for request")
-                    }
+                } else if verbose {
+                    await logToStderr("MCPServer: No response generated for request")
                 }
             } catch {
-                logToStderrSync("DEBUG: Exception: \(error)")
                 await logToStderr("MCPServer: Client error: \(error)")
                 break
             }
