@@ -160,7 +160,26 @@ public final class TCPServer: Sendable {
             throw SocketError.acceptFailed
         }
 
+        // Configure socket timeouts for read and write operations
+        try setSocketTimeouts(socket: clientSocket, readTimeout: 30, writeTimeout: 10)
+
         return clientSocket
+    }
+
+    private func setSocketTimeouts(socket: Int32, readTimeout: Int, writeTimeout: Int) throws {
+        // Set read timeout (SO_RCVTIMEO)
+        var readTV = timeval(tv_sec: __darwin_time_t(readTimeout), tv_usec: 0)
+        let readResult = setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &readTV, socklen_t(MemoryLayout<timeval>.size))
+        guard readResult == 0 else {
+            throw SocketError.socketOptionFailed
+        }
+
+        // Set write timeout (SO_SNDTIMEO)
+        var writeTV = timeval(tv_sec: __darwin_time_t(writeTimeout), tv_usec: 0)
+        let writeResult = setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &writeTV, socklen_t(MemoryLayout<timeval>.size))
+        guard writeResult == 0 else {
+            throw SocketError.socketOptionFailed
+        }
     }
 
     nonisolated private func handleClient(socket: Int32) async {
